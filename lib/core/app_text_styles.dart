@@ -12,5 +12,10 @@ class AppTextStyles {
     fontWeight: FontWeight.bold,
     color: AppColors.darkCyan,
   );
+  static TextStyle bold16white = TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.bold,
+    color: Color(0xFFFFFFFF),
+  );
 
 }

@@ -1,10 +1,13 @@
 import 'package:ambient/core/app_colors.dart';
 import 'package:ambient/core/app_images.dart';
+import 'package:ambient/core/app_routes.dart';
 import 'package:ambient/core/app_text_styles.dart';
 import 'package:ambient/feature/tabs/home_tab/widgets/beacons_item.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:icons_plus/icons_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key});
@@ -14,6 +17,49 @@ class HomeTab extends StatefulWidget {
 }
 
 class _HomeTabState extends State<HomeTab> {
+  List<ScanResult> _devices = [];
+  Stream<List<ScanResult>>? _scanStream;
+  @override
+  void initState() {
+    super.initState();
+    _initPermissions();
+  }
+  Future<void> _initPermissions() async {
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+  }
+
+
+
+    void scan() {
+      setState(() {
+        _devices.clear();
+        _scanStream = FlutterBluePlus.scanResults;
+      });
+
+      FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 5),
+        androidUsesFineLocation: true, // required for beacons
+      );
+
+      _scanStream?.listen((results) {
+        setState(() {
+          _devices = results;
+        });
+      });
+    }
+    void stopScan(){
+      FlutterBluePlus.stopScan();
+      setState(() {
+        _scanStream=null;
+      });
+    }
+
+
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -56,57 +102,33 @@ class _HomeTabState extends State<HomeTab> {
                   ],
                 ),
               ),
-              SizedBox(height: 40),
-              Text("live Rssi Readings", style: AppTextStyles.bold20white, textAlign: TextAlign.center),
-              SizedBox(height: 10),
+              SizedBox(height: 20),
               Row(
                 children: [
-                  Expanded(
-                    child: Container(
-                      padding: EdgeInsets.all(5),
-                      margin: EdgeInsets.only(right: 8),
-                      height: 300,
-                      decoration: BoxDecoration(
-                          color: AppColors.navyColor,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppColors.primaryGrey, width: 2)
+                  Text("Available beacons🌐", style: AppTextStyles.bold20white),
+                  Spacer(),
+                  ElevatedButton(
+                    onPressed: scan,style:ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.darkCyan,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Column(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly, // Better spacing
-                          children: [
-                            Text("Rssi Reading", style: AppTextStyles.bold20white),
-                            Flexible(child: Image.asset(AppImages.waveImg)), // Made image flexible
-                            Text("-79 Dbm", style: AppTextStyles.bold20white),
-                          ]
+                  ) , child: Text("Search for beacons",style:AppTextStyles.bold16white,)
+                    , ),
+                  SizedBox(width:10,),
+                  ElevatedButton(
+                    onPressed: stopScan,style:ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.darkCyan,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Container(
-                      padding: EdgeInsets.all(5),
-                      margin: EdgeInsets.only(left: 8),
-                      height: 300,
-                      decoration: BoxDecoration(
-                          color: AppColors.navyColor,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppColors.primaryGrey, width: 2)
-                      ),
-                      child: Column(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly, // Better spacing
-                          children: [
-                            Text("Kalman Rssi", style: AppTextStyles.bold20white),
-                            Flexible(child: Image.asset(AppImages.waveImg)), // Made image flexible
-                            Text("-50 Dbm", style: AppTextStyles.bold20white),
-                          ]
-                      ),
-                    ),
-                  ),
+                  ) , child: Text("Stop Search",style:AppTextStyles.bold16white,)
+                    , ),
+
                 ],
               ),
               SizedBox(height: 20),
-              Text("Connected Beacons 🌐", style: AppTextStyles.bold20white),
-              SizedBox(height: 20),
-              BeaconsItem(),
+              BeaconsItem(devices: _devices,),
               SizedBox(height: 20), // Added bottom padding for better scrolling experience
             ],
           ),
@@ -115,3 +137,4 @@ class _HomeTabState extends State<HomeTab> {
     );
   }
 }
+

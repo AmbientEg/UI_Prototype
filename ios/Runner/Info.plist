@@ -45,5 +45,10 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Location usage descriptions for beacon ranging -->
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app needs access to location to detect nearby beacons.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs access to location to detect nearby beacons.</string>
 </dict>
 </plist>
