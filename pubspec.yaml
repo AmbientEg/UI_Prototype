@@ -39,6 +39,7 @@ dependencies:
   flutter_blue_plus: ^1.36.6
   sensors_plus: ^7.0.0
   flutter_beacon: ^0.5.1
+  permission_handler: ^12.0.1
 
 dev_dependencies:
   flutter_test:
