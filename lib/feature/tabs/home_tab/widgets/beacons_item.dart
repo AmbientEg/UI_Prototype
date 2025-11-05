@@ -8,7 +8,7 @@ import '../models/kalman_filter.dart';
 class BeaconsItem extends StatefulWidget {
   final List<ScanResult> devices;
 
-   BeaconsItem({super.key, required this.devices});
+  BeaconsItem({super.key, required this.devices});
 
   @override
   State<BeaconsItem> createState() => _BeaconsItemState();
@@ -67,4 +67,3 @@ class _BeaconsItemState extends State<BeaconsItem> {
     );
   }
 }
-
