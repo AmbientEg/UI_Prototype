@@ -62,7 +62,18 @@ class _HomeTabState extends State<HomeTab> {
               SizedBox(height: 20),
               ElevatedButton(onPressed: (){
                 Navigator.pushNamed(context, AppRoutes.testScreen);
-              }, child:Text("Test Screen"))
+              }, child:Text("Test Screen")),
+              SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: (){
+                  Navigator.pushNamed(
+                    context, 
+                    AppRoutes.mapPage,
+                    arguments: {'wsUrl': 'ws://192.168.1.3:8000/ws'},
+                  );
+                },
+                child: Text("Room Map")
+              )
             ],
           ),
         ),
