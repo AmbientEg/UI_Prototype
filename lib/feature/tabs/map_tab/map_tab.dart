@@ -24,6 +24,10 @@ class _MapScreenState extends State<MapScreen> {
   final List<Offset> beacons = [];
   final List<Pin> pins = [];
   final Map<String, SignalModel> _beaconSignals = {};
+  // Scale: meters -> pixels (updated in _calculateMapDimensions)
+  double scale = 50.0;
+  // Track websocket-sourced beacons by id so we can update/replace them
+  final Map<String, BeaconPin> _wsBeacons = {};
   late final WebSocketChannel channel;
   // Scanning state
   List<ScanResult> devices = [];
@@ -72,7 +76,7 @@ class _MapScreenState extends State<MapScreen> {
   void _initWebSocket() {
     try {
       channel = WebSocketChannel.connect(
-        Uri.parse("ws://172.20.10.5:8000/ws"),
+        Uri.parse("ws://192.168.1.3:8000/ws"),
       );
       print("WebSocket connected to ws://10.0.2.2:8000/ws");
       
@@ -80,6 +84,7 @@ class _MapScreenState extends State<MapScreen> {
       channel.stream.listen(
         (data) {
           print("WebSocket received: $data");
+          _processWebSocketData(data);
         },
         onError: (error) {
           print("WebSocket error: $error");
@@ -91,6 +96,54 @@ class _MapScreenState extends State<MapScreen> {
     } catch (e) {
       print("Failed to connect WebSocket: $e");
     }
+  }
+
+  void _processWebSocketData(dynamic data) {
+    try {
+      // Expecting JSON like: {"id":"beacon1","x":1.2,"y":3.4}
+      final decoded = data is String ? jsonDecode(data) : data;
+
+      if (decoded is Map && decoded.containsKey('x') && decoded.containsKey('y')) {
+        final rawX = decoded['x'];
+        final rawY = decoded['y'];
+        final id = (decoded['id'] ?? decoded['uuid'] ?? decoded['name'] ?? DateTime.now().millisecondsSinceEpoch.toString()).toString();
+
+        if (rawX is num && rawY is num) {
+          final double xMeters = rawX.toDouble();
+          final double yMeters = rawY.toDouble();
+
+          // Convert room coordinates (origin: bottom-left) to screen coordinates
+          final offset = _roomToScreenOffset(xMeters, yMeters);
+
+          // Replace any existing WS beacon with same id
+          setState(() {
+            _wsBeacons[id] = BeaconPin(
+              position: offset,
+              label: id,
+              color: Colors.green,
+              // rssi optional
+              rssi: decoded['rssi'] is num ? decoded['rssi'].toDouble() : null,
+            );
+
+            // Remove previous pins with same label then add all ws beacons
+            pins.removeWhere((p) => p is BeaconPin && _wsBeacons.keys.contains(p.label));
+            pins.addAll(_wsBeacons.values);
+          });
+        }
+      }
+    } catch (e) {
+      print('Failed to process websocket data: $e');
+    }
+  }
+
+  Offset _roomToScreenOffset(double xMeters, double yMeters) {
+    // Convert meters to pixels using current scale and room bounds.
+    // Origin for incoming data: bottom-left of room (0,0 at bottom-left, y up)
+    // Flutter canvas origin: top-left (y down). roomLeft/roomTop/roomBottom are in pixels.
+
+    final px = roomLeft + xMeters * scale;
+    final py = roomBottom - yMeters * scale; // invert y
+    return Offset(px, py);
   }
 
   Future<void> _initPermissions() async {
@@ -176,65 +229,83 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _initializeDefaultDimensions() {
-    // Set default dimensions that will be updated in didChangeDependencies
-    // Scale factors: 1 unit = 100 pixels (for better visualization)
-    final scale = 100.0;
-    
-    // Set room dimensions to 5 units width and 4.2 units length
-    roomWidth = 5.0 * scale;  // 5 units width
-    roomHeight = 4.2 * scale;  // 4.2 units length
-    
-    // Calculate map dimensions with some padding
-    mapWidth = roomWidth + 48.0;  // 24px padding on each side
-    mapHeight = roomHeight + 48.0; // 24px padding on each side
-    
-    // Calculate room position (centered in the map)
-    roomMargin = 24.0;
-    roomLeft = (mapWidth - roomWidth) / 2;
-    roomTop = (mapHeight - roomHeight) / 2;
-    roomRight = roomLeft + roomWidth;
-    roomBottom = roomTop + roomHeight;
-    roomCenterX = roomLeft + (roomWidth / 2);
-    roomCenterY = roomTop + (roomHeight / 2);
-  }
+    // Fallback scale in pixels per meter
+    const defaultScale = 50.0;
+    scale = defaultScale;
 
-  void _calculateMapDimensions() {
-    final screenSize = MediaQuery.of(context).size;
-    
-    // Calculate map size based on screen dimensions
-    // Leave space for margins and UI elements
-    mapWidth = (screenSize.width * 0.9).clamp(300.0, 800.0);
-    mapHeight = (screenSize.height * 0.4).clamp(250.0, 600.0);
-    
-    // Calculate room dimensions (96% of map with 2% margin on each side)
-    roomMargin = mapWidth * 0.02;
-    roomWidth = mapWidth - (roomMargin * 2);
-    roomHeight = mapHeight - (roomMargin * 2);
-    
-    // Calculate room boundaries
+    final roomWidthMeters = 8.4;
+    final roomHeightMeters = 10.0;
+
+    // Apply scale
+    roomWidth = roomWidthMeters * defaultScale;
+    roomHeight = roomHeightMeters * defaultScale;
+
+    roomMargin = 24.0;
+    mapWidth = roomWidth + roomMargin * 2;
+    mapHeight = roomHeight + roomMargin * 2;
+
     roomLeft = roomMargin;
     roomTop = roomMargin;
     roomRight = roomLeft + roomWidth;
     roomBottom = roomTop + roomHeight;
-    
-    // Calculate room center
-    roomCenterX = roomLeft + (roomWidth / 2);
-    roomCenterY = roomTop + (roomHeight / 2);
+    roomCenterX = roomLeft + roomWidth / 2;
+    roomCenterY = roomTop + roomHeight / 2;
   }
 
+
+
+  void _calculateMapDimensions() {
+    final screenSize = MediaQuery.of(context).size;
+
+    final roomWidthMeters = 8.4;
+    final roomHeightMeters = 10.0;
+
+    // Available space on screen
+    final availableWidth = screenSize.width * 0.9;
+    final availableHeight = screenSize.height * 0.5;
+
+    // Calculate scale while keeping aspect ratio
+    final scaleX = availableWidth / roomWidthMeters;
+    final scaleY = availableHeight / roomHeightMeters;
+    final computedScale = scaleX < scaleY ? scaleX : scaleY;
+
+    // Save computed scale (meters -> pixels)
+    scale = computedScale;
+
+    // Room size in pixels
+    roomWidth = roomWidthMeters * scale;
+    roomHeight = roomHeightMeters * scale;
+
+    // Margin
+    roomMargin = (availableWidth - roomWidth) / 2; // horizontal centering
+    mapWidth = roomWidth + roomMargin * 2;
+    mapHeight = roomHeight + roomMargin * 2;
+
+    // Room bounds
+    roomLeft = roomMargin;
+    roomTop = (mapHeight - roomHeight) / 2; // vertical centering
+    roomRight = roomLeft + roomWidth;
+    roomBottom = roomTop + roomHeight;
+
+    // Center
+    roomCenterX = roomLeft + roomWidth / 2;
+    roomCenterY = roomTop + roomHeight / 2;
+  }
+
+
   List<Wall> get walls => [
-    // Dynamic room walls based on calculated dimensions
-    Wall(Offset(roomLeft, roomTop), Offset(roomRight, roomTop)),     // Top wall
-    Wall(Offset(roomRight, roomTop), Offset(roomRight, roomBottom)), // Right wall
-    Wall(Offset(roomRight, roomBottom), Offset(roomLeft, roomBottom)), // Bottom wall
-    Wall(Offset(roomLeft, roomBottom), Offset(roomLeft, roomTop)),   // Left wall
+    // Dynamic room walls based on calculated dimensions (reversed: start from bottom)
+    Wall(Offset(roomLeft, roomBottom), Offset(roomRight, roomBottom)), // Bottom wall
+    Wall(Offset(roomRight, roomBottom), Offset(roomRight, roomTop)), // Right wall
+    Wall(Offset(roomRight, roomTop), Offset(roomLeft, roomTop)), // Top wall
+    Wall(Offset(roomLeft, roomTop), Offset(roomLeft, roomBottom)),   // Left wall
   ];
 
   List<Door> get doors => [
-    // Dynamic door position in top wall
+    // Dynamic door position in bottom wall
     Door(
-      Offset(roomCenterX - 20, roomTop), 
-      Offset(roomCenterX + 20, roomTop)
+      Offset(roomCenterX - 20, roomBottom), 
+      Offset(roomCenterX + 20, roomBottom)
     ),
   ];
 
@@ -430,6 +501,13 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Recalculate map dimensions for current screen size
+    _calculateMapDimensions();
+
+    // Detect device type (mobile vs tablet) using shortestSide
+    final media = MediaQuery.of(context);
+    final isTablet = media.size.shortestSide >= 600;
+
     // Calculate dynamic coordinate ranges for instructions
     final maxX = roomWidth / 2;
     final maxY = roomHeight / 2;
@@ -449,127 +527,194 @@ class _MapScreenState extends State<MapScreen> {
       ),
       body: Column(
         children: [
-          // Info panel with scanning controls
+          // Info panel with scanning controls (responsive)
           Container(
             padding: const EdgeInsets.all(16),
             color: Colors.blue[50],
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildInfoItem("Walls", walls.length, Colors.brown),
-                    _buildInfoItem("Doors", doors.length, Colors.green),
-                    _buildInfoItem("Beacons", devices.length, Colors.red),
-                    _buildInfoItem("Pins", pins.length, Colors.blue),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    ElevatedButton(
-                      onPressed: scan,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green[600],
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      child: const Text("Search for Beacons"),
-                    ),
-                    const SizedBox(width: 16),
-                    ElevatedButton(
-                      onPressed: stopScan,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red[600],
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                      child: const Text("Stop Search"),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          // Map area with zoom controls
-          Expanded(
-            child: Stack(
-              children: [
-                Center(
-                  child: Container(
-                    margin: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey[400]!, width: 2),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: GestureDetector(
-                      onTapUp: (details) {
-                        setState(() {
-                          // add beacon at tap position
-                          beacons.add(details.localPosition);
-                        });
-                      },
-                      child: CustomPaint(
-                        size: Size(mapWidth, mapHeight),
-                        painter: MapPainter(
-                          walls: walls,
-                          doors: doors,
-                          beacons: beacons,
-                          pins: pins,
-                          zoomLevel: zoomLevel,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                // Zoom controls
-                Positioned(
-                  right: 20,
-                  top: 20,
-                  child: Column(
+            child: isTablet
+                ? Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      FloatingActionButton.small(
-                        onPressed: _zoomIn,
-                        backgroundColor: Colors.blue[700],
-                        child: const Icon(Icons.zoom_in, color: Colors.white),
+                      Row(
+                        children: [
+                          _buildInfoItem("Walls", walls.length, Colors.brown),
+                          const SizedBox(width: 12),
+                          _buildInfoItem("Doors", doors.length, Colors.green),
+                          const SizedBox(width: 12),
+                          _buildInfoItem("Beacons", devices.length, Colors.red),
+                          const SizedBox(width: 12),
+                          _buildInfoItem("Pins", pins.length, Colors.blue),
+                        ],
                       ),
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(4),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.grey.withOpacity(0.3),
-                              spreadRadius: 1,
-                              blurRadius: 2,
+                      Row(
+                        children: [
+                          ElevatedButton(
+                            onPressed: scan,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green[600],
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                             ),
-                          ],
-                        ),
-                        child: Text(
-                          '${(zoomLevel * 100).round()}%',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
+                            child: const Text("Search for Beacons"),
                           ),
-                        ),
+                          const SizedBox(width: 16),
+                          ElevatedButton(
+                            onPressed: stopScan,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red[600],
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                            ),
+                            child: const Text("Stop Search"),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 8),
-                      FloatingActionButton.small(
-                        onPressed: _zoomOut,
-                        backgroundColor: Colors.blue[700],
-                        child: const Icon(Icons.zoom_out, color: Colors.white),
+                    ],
+                  )
+                : Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildInfoItem("Walls", walls.length, Colors.brown),
+                          _buildInfoItem("Doors", doors.length, Colors.green),
+                          _buildInfoItem("Beacons", devices.length, Colors.red),
+                          _buildInfoItem("Pins", pins.length, Colors.blue),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: scan,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green[600],
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text("Search for Beacons"),
+                          ),
+                          const SizedBox(width: 16),
+                          ElevatedButton(
+                            onPressed: stopScan,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red[600],
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            child: const Text("Stop Search"),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ),
-              ],
+          ),
+          // Map area with zoom controls (responsive sizing)
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final containerWidth = isTablet ? constraints.maxWidth * 0.75 : constraints.maxWidth * 0.95;
+                final containerHeight = isTablet ? constraints.maxHeight * 0.9 : constraints.maxHeight * 0.95;
+
+                return Stack(
+                  children: [
+                    Center(
+                      child: Container(
+                        width: containerWidth,
+                        height: containerHeight,
+                        margin: EdgeInsets.all(isTablet ? 24 : 16),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey[400]!, width: 2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: GestureDetector(
+                          onTapUp: (details) {
+                            setState(() {
+                              // add beacon at tap position
+                              beacons.add(details.localPosition);
+                            });
+                          },
+                          child: CustomPaint(
+                            size: Size(containerWidth, containerHeight),
+                            painter: MapPainter(
+                              walls: walls,
+                              doors: doors,
+                              beacons: beacons,
+                              pins: pins,
+                              zoomLevel: zoomLevel,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Zoom controls
+                    Positioned(
+                      right: isTablet ? 32 : 20,
+                      top: isTablet ? 32 : 20,
+                      child: Column(
+                        children: [
+                          isTablet
+                              ? FloatingActionButton(
+                                  onPressed: _zoomIn,
+                                  backgroundColor: Colors.blue[700],
+                                  child: const Icon(Icons.zoom_in, color: Colors.white),
+                                )
+                              : FloatingActionButton.small(
+                                  onPressed: _zoomIn,
+                                  backgroundColor: Colors.blue[700],
+                                  child: const Icon(Icons.zoom_in, color: Colors.white),
+                                ),
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(4),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.grey.withOpacity(0.3),
+                                  spreadRadius: 1,
+                                  blurRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              '${(zoomLevel * 100).round()}%',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          isTablet
+                              ? FloatingActionButton(
+                                  onPressed: _zoomOut,
+                                  backgroundColor: Colors.blue[700],
+                                  child: const Icon(Icons.zoom_out, color: Colors.white),
+                                )
+                              : FloatingActionButton.small(
+                                  onPressed: _zoomOut,
+                                  backgroundColor: Colors.blue[700],
+                                  child: const Icon(Icons.zoom_out, color: Colors.white),
+                                ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
           // Instructions
